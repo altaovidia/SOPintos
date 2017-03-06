@@ -29,7 +29,6 @@ static bool too_many_loops (unsigned loops);
 static void busy_wait (int64_t loops);
 static void real_time_sleep (int64_t num, int32_t denom);
 static void real_time_delay (int64_t num, int32_t denom);
-
 struct list dormidos;
 
 /* Sets up the timer to interrupt TIMER_FREQ times per second,
@@ -37,9 +36,9 @@ struct list dormidos;
 void
 timer_init (void) 
 {
+  list_init(&dormidos);
   pit_configure_channel (0, 2, TIMER_FREQ);
   intr_register_ext (0x20, timer_interrupt, "8254 Timer");
-  list_init(&dormidos);
 }
 
 /* Calibrates loops_per_tick, used to implement brief delays. */
@@ -87,43 +86,26 @@ timer_elapsed (int64_t then)
   return timer_ticks () - then;
 }
 
-/*  Esta estructura nos sirve para guardar el
-	apuntador al thread y el tiempo en el que se 
-	debe despertar. Debemos guardar un nodo (struct list_elem)
-	para poder agregar estructuras de este tipo a una lista.
-*/
-struct dormido
-{
-    int64_t despertar;
-    struct thread* t;
-    struct list_elem elem;
-};
-
 /* Sleeps for approximately TICKS timer ticks.  Interrupts must
    be turned on. */
 void
 timer_sleep (int64_t ticks) 
 {
-  /* En condiciones normales no declaramos cosas asi,
-     pues esta variable se va a guardar en el stack y si
-	 salimos de la funcion se perdera. Sin embargo podemos hacerlo
-	 pues vamos a bloquear el thread.
-  */	
-  struct dormido d;
   int64_t start = timer_ticks ();
 
   ASSERT (intr_get_level () == INTR_ON);
+  //while (timer_elapsed (start) < ticks) 
+  //  thread_yield ();
+
+  // lo de abajo esta agregado
+
   int old = intr_set_level(INTR_OFF);
 
-  /* Llenamos la estructura con los datos */	
-  d.t = thread_current();
-  d.despertar = start + ticks;
-  /* La insertamos en la lista */	
-  list_push_back(&dormidos, &d.elem);
-  
-  thread_block(); /* Bloqueamos el thread */
-	
-  /* regresamos la interrupciones a su nivel original */	
+  list_push_front(&dormidos, &thread_current()->elem);
+
+  thread_current()->por_dormir = ticks;
+  thread_block();
+
   intr_set_level(old);
 }
 
@@ -201,25 +183,28 @@ timer_print_stats (void)
 static void
 timer_interrupt (struct intr_frame *args UNUSED)
 {
+  struct list_elem* e;
+  for (e = list_begin(&dormidos); e != list_end(&dormidos); )
+  {
+    struct thread* actual = list_entry(e, struct thread, elem);
+    //printf("%s\n", actual->name);
+    actual->por_dormir--;
+    if(actual->por_dormir <= 0){
+      e = list_remove(e);
+      thread_unblock(actual);
+      
+    }
+    else{
+      e = list_next(e);
+    }
+  }
+
+
+
+
+
   ticks++;
   thread_tick ();
-  struct list_elem *e;
-
-  /* Iteramos sobre la lista de dormidos */	
-  for (e = list_begin (&dormidos); e != list_end (&dormidos); )
-  {
-	/* Obtenemos la estructura */  
-    struct dormido *d = list_entry (e, struct dormido, elem);
-	  
-	/* Verrificamos si es momento de despertar al thread */  
-    if(d->despertar <= ticks) {
-      e = list_remove(e);  /* Es necesario eliminar de la lista */
-      thread_unblock(d->t);   /* Debloqueamos el thread */
-    }
-    else
-      e = list_next (e);  /* Sino es momento despertar, continuamos */
-  }
-  
 }
 
 /* Returns true if LOOPS iterations waits for more than one timer
